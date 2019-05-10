@@ -58,7 +58,7 @@ class BiEncoderRankerAgent(TorchGeneratorAgent):
         self.rank_loss = torch.nn.CrossEntropyLoss(reduce=True, size_average=True)
 
     def build_model(self):
-        self.model = BertEncoderTransformerDecoderModule(self.opt)
+        self.model = BertTransformerModule(self.opt)
 
     @staticmethod
     def dictionary_class():
@@ -91,7 +91,7 @@ class BiEncoderRankerAgent(TorchGeneratorAgent):
         return shared
 		
 		
-class BertEncoderTransformerDecoderModule(torch.nn.Module):
+class BertTransformerModule(torch.nn.Module):
     """ Groups context_encoder and transformer_encoder together.
     """
 	
@@ -117,18 +117,44 @@ class BertEncoderTransformerDecoderModule(torch.nn.Module):
         n_segments=n_segments,
     )
 	
-    def __init__(self, opt):
+    def __init__(self, opt, dictionary):
         super(BiEncoderModule, self).__init__()
-        self.context_encoder = BertWrapper(
+        self.pad_idx = dictionary.pad_idx
+        self.start_idx = dictionary.start_idx
+        self.end_idx = dictionary.end_idx
+		
+		 if opt.get('n_positions'):
+            # if the number of positions is explicitly provided, use that
+            n_positions = opt['n_positions']
+        else:
+            # else, use the worst case from truncate
+            n_positions = max(
+                opt.get('truncate') or 0,
+                opt.get('text_truncate') or 0,
+                opt.get('label_truncate') or 0
+            )
+            if n_positions == 0:
+                # default to 1024
+                n_positions = 1024
+        n_segments = opt.get('n_segments', 0)
+
+        if n_positions < 0:
+            raise ValueError('n_positions must be positive')
+		
+		self.context_encoder = BertWrapper(
             BertModel.from_pretrained(opt['pretrained_path']),
             opt['out_dim'],
             add_transformer_layer=opt['add_transformer_layer'],
             layer_pulled=opt['pull_from_layer'],
             aggregation=opt['bert_aggregation']
         )
+		
         self.transformer_decoder = _build_decoder( opt, dictionary, self.embeddings, self.pad_idx,
             n_positions=n_positions,)
-
+	
+	
+		
+	
     def forward(self, token_idx_ctxt, segment_idx_ctxt, mask_ctxt,
                 token_idx_cands, segment_idx_cands, mask_cands):
         embedding_ctxt = None
