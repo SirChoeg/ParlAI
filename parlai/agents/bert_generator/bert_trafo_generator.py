@@ -9,6 +9,7 @@ from parlai.core.utils import padded_3d
 from parlai.zoo.bert.build import download
 
 from parlai.core.torch_generator_agent import TorchGeneratorAgent
+from parlai.core.torch_generator_agent import TorchGeneratorModel
 
 from parlai.agents.bert_ranker.bert_dictionary import BertDictionaryAgent
 from parlai.agents.bert_ranker.helpers import (get_bert_optimizer, BertWrapper, BertModel,
@@ -17,20 +18,73 @@ from parlai.agents.bert_ranker.helpers import (get_bert_optimizer, BertWrapper, 
 import parlai.agents.transformer.modules
 
 from  parlai.agents.transformer.modules	import TransformerDecoder
-					  
 import os
 import torch
 from tqdm import tqdm
 
 
-class BiEncoderRankerAgent(TorchGeneratorAgent):
+
+def add_transformer_cmdline_args(parser):
+        parser.add_argument('-esz', '--embedding-size', type=int, default=300,
+                           help='Size of all embedding layers')
+        parser.add_argument('-nl', '--n-layers', type=int, default=2)
+        parser.add_argument('-hid', '--ffn-size', type=int, default=300,
+                           help='Hidden size of the FFN layers')
+        parser.add_argument('--dropout', type=float, default=0.0,
+                           help='Dropout used in Vaswani 2017.')
+        parser.add_argument('--attention-dropout', type=float, default=0.0,
+                           help='Dropout used after attention softmax.')
+        parser.add_argument('--relu-dropout', type=float, default=0.0,
+                           help='Dropout used after ReLU. From tensor2tensor.')
+        parser.add_argument('--n-heads', type=int, default=2,
+                           help='Number of multihead attention heads')
+        parser.add_argument('--learn-positional-embeddings', type='bool', default=False)
+        parser.add_argument('--embeddings-scale', type='bool', default=True)
+        parser.add_argument('--n-positions', type=int, default=None, hidden=True,
+                           help='Number of positional embeddings to learn. Defaults '
+                                'to truncate or 1024 if not provided.')
+        parser.add_argument('--n-segments', type=int, default=0,
+                           help='The number of segments that support the model. '
+                                'If zero no segment and no langs_embedding.')
+        parser.add_argument('--variant', choices={'aiayn', 'xlm'}, default='aiayn',
+                           help='Chooses locations of layer norms, etc.')
+        parser.add_argument('--activation', choices={'relu', 'gelu'}, default='relu',
+                           help='Nonlinear activation to use. AIAYN uses relu, but '
+                                'more recent papers prefer gelu.')
+
+def _build_decoder(opt, dictionary, embedding=None, padding_idx=None,
+                   n_positions=1024, n_segments=0):
+        return TransformerDecoder(
+        n_heads=opt['n_heads'],
+        n_layers=opt['n_layers'],
+        embedding_size=768,
+        ffn_size=opt['ffn_size'],
+        vocabulary_size=len(dictionary),
+        embedding=embedding,
+        dropout=opt['dropout'],
+        attention_dropout=opt['attention_dropout'],
+        relu_dropout=opt['relu_dropout'],
+        padding_idx=padding_idx,
+        learn_positional_embeddings=opt['learn_positional_embeddings'],
+        embeddings_scale=opt['embeddings_scale'],
+        n_positions=n_positions,
+        activation=opt['activation'],
+        variant=opt['variant'],
+        n_segments=n_segments,
+    )
+class BertTrafoGeneratorAgent(TorchGeneratorAgent):
     """ TorchRankerAgent implementation of the biencoder.
         It is a standalone Agent. It might be called by the Both Encoder.
     """
 
+    
+    
     @staticmethod
     def add_cmdline_args(parser):
+        TorchGeneratorAgent.add_cmdline_args(parser)
+        add_transformer_cmdline_args(parser)
         add_common_args(parser)
+        parser.add_argument_group('Transformer Arguments')
         parser.set_defaults(
             encode_candidate_vecs=True
         )
@@ -58,7 +112,7 @@ class BiEncoderRankerAgent(TorchGeneratorAgent):
         self.rank_loss = torch.nn.CrossEntropyLoss(reduce=True, size_average=True)
 
     def build_model(self):
-        self.model = BertTransformerModule(self.opt)
+        self.model = BertTransformerModule(self.opt,self.dict)
 
     @staticmethod
     def dictionary_class():
@@ -70,60 +124,29 @@ class BiEncoderRankerAgent(TorchGeneratorAgent):
                                             self.opt['learningrate'],
                                             fp16=self.opt.get('fp16'))
 
-  
-
-  
-
-    def _set_text_vec(self, *args, **kwargs):
-        obs = super()._set_text_vec(*args, **kwargs)
-        # concatenate the [CLS] and [SEP] tokens
-        if obs is not None and 'text_vec' in obs:
-            obs['text_vec'] = surround(obs['text_vec'], self.START_IDX,
-                                       self.END_IDX)
-        return obs
-
     
-
+"""
     def share(self):
-        """Share model parameters."""
+        "Share model parameters."
         shared = super().share()
-        shared['vocab_candidate_encs'] = self.vocab_candidate_encs
         return shared
-		
-		
-class BertTransformerModule(torch.nn.Module):
+        
+        """
+class BertTransformerModule(TorchGeneratorModel):
     """ Groups context_encoder and transformer_encoder together.
     """
-	
-	
-	def _build_decoder(opt, dictionary, embedding=None, padding_idx=None,
-                   n_positions=1024, n_segments=0):
-    return TransformerDecoder(
-        n_heads=opt['n_heads'],
-        n_layers=opt['n_layers'],
-        embedding_size=opt['embedding_size'],
-        ffn_size=opt['ffn_size'],
-        vocabulary_size=len(dictionary),
-        embedding=embedding,
-        dropout=opt['dropout'],
-        attention_dropout=opt['attention_dropout'],
-        relu_dropout=opt['relu_dropout'],
-        padding_idx=padding_idx,
-        learn_positional_embeddings=opt['learn_positional_embeddings'],
-        embeddings_scale=opt['embeddings_scale'],
-        n_positions=n_positions,
-        activation=opt['activation'],
-        variant=opt['variant'],
-        n_segments=n_segments,
-    )
-	
+    
+    
+    
+    
     def __init__(self, opt, dictionary):
-        super(BiEncoderModule, self).__init__()
         self.pad_idx = dictionary.pad_idx
         self.start_idx = dictionary.start_idx
         self.end_idx = dictionary.end_idx
-		
-		 if opt.get('n_positions'):
+        self.dictionary = dictionary
+        self.embeddings=None
+        super().__init__(self.pad_idx, self.start_idx, self.end_idx)
+        if opt.get('n_positions'):
             # if the number of positions is explicitly provided, use that
             n_positions = opt['n_positions']
         else:
@@ -140,32 +163,32 @@ class BertTransformerModule(torch.nn.Module):
 
         if n_positions < 0:
             raise ValueError('n_positions must be positive')
-		
-		self.context_encoder = BertWrapper(
+        
+        self.encoder = BertWrapper(
             BertModel.from_pretrained(opt['pretrained_path']),
             opt['out_dim'],
             add_transformer_layer=opt['add_transformer_layer'],
             layer_pulled=opt['pull_from_layer'],
             aggregation=opt['bert_aggregation']
         )
-		
-        self.transformer_decoder = _build_decoder( opt, dictionary, self.embeddings, self.pad_idx,
+        
+        self.decoder = _build_decoder( opt, self.dictionary, self.embeddings, self.pad_idx,
             n_positions=n_positions,)
-	
-	
-		
-	
-    def forward(self, token_idx_ctxt, segment_idx_ctxt, mask_ctxt,
-                token_idx_cands, segment_idx_cands, mask_cands):
-        embedding_ctxt = None
-        if token_idx_ctxt is not None:
-            embedding_ctxt = self.context_encoder(
-                token_idx_ctxt, segment_idx_ctxt, mask_ctxt)
-        embedding_cands = None
-        if token_idx_cands is not None:
-            embedding_cands = self.cand_encoder(
-                token_idx_cands, segment_idx_cands, mask_cands)
-        return embedding_ctxt, embedding_cands
+    
+    
+    
+    def reorder_encoder_states(self, encoder_states, indices):
+        # no support for beam search at this time
+        return None
+
+    def reorder_decoder_incremental_state(self, incremental_state, inds):
+        # no support for incremental decoding at this time
+        return None
+
+    def output(self, tensor):
+        # project back to vocabulary
+        output = F.linear(tensor, self.embeddings.weight)
+        return output
 
 
 def to_bert_input(token_idx, null_idx):
