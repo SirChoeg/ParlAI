@@ -111,29 +111,30 @@ class BertTransformerGeneratorAgent(TorchGeneratorAgent):
         )"""
     @classmethod
     def add_cmdline_args(cls, argparser):
+        print('-----add_cmdline_args')
         """Add command-line arguments specifically for this agent."""
         add_bert_cmdline_args(argparser)
         agent = argparser.add_argument_group('Transformer Arguments')
         add_transformer_cmdline_args(agent)
         cls.dictionary_class().add_cmdline_args(argparser)
-
         super(BertTransformerGeneratorAgent, cls).add_cmdline_args(argparser)
         return agent
         
     @staticmethod
     def dictionary_class():
+        print('-----dictionary_class')
         return BertDictionaryAgent
 
     def __init__(self, opt, shared=None):
+        print('-----__init__')
         # download pretrained models
         download(opt['datapath'])
         self.pretrained_path = os.path.join(opt['datapath'], 'models',
                                             'bert_models', MODEL_PATH)
         opt['pretrained_path'] = self.pretrained_path
-
-        self.clip = -1
-
         super().__init__(opt, shared)
+        self.clip = -1
+        
         # it's easier for now to use DataParallel when
         self.data_parallel = opt.get('data_parallel') and self.use_cuda
         if self.data_parallel:
@@ -147,10 +148,45 @@ class BertTransformerGeneratorAgent(TorchGeneratorAgent):
         self.rank_loss = torch.nn.CrossEntropyLoss(reduce=True, size_average=True)
 
     def build_model(self):
+        print('-----build_model')
         self.model = BertTransformerModule(self.opt,self.dict)
         if self.use_cuda:
             self.model.cuda()
         return self.model
+
+    def forward(self, *xs, ys=None, cand_params=None, prev_enc=None, maxlen=None,
+                bsz=None):
+        print('-----forward')
+        if ys is not None:
+            # TODO: get rid of longest_label
+            # keep track of longest label we've ever seen
+            # we'll never produce longer ones than that during prediction
+            self.longest_label = max(self.longest_label, ys.size(1))
+        token_idx, segment_idx, mask = to_bert_input(*xs, self.NULL_IDX)
+        # use cached encoding if available
+        encoder_states = prev_enc if prev_enc is not None else self.encoder(token_idx, segment_idx, mask)
+
+        if ys is not None:
+            # use teacher forcing
+            scores, preds = self.decode_forced(encoder_states, ys)
+        else:
+            scores, preds = self.decode_greedy(
+                encoder_states,
+                bsz,
+                maxlen or self.longest_label
+            )
+
+        return scores, preds, encoder_states
+
+    def to_bert_input(token_idx, null_idx):
+        """ token_idx is a 2D tensor int.
+        return token_idx, segment_idx and mask
+        """
+        segment_idx = token_idx * 0
+        mask = (token_idx != null_idx)
+        # nullify elements in case self.NULL_IDX was not 0
+        token_idx = token_idx * mask.long()
+        return token_idx, segment_idx, mask
 
     @staticmethod
     def dictionary_class():

@@ -40,6 +40,16 @@ def _build_decoder(opt, dictionary, embedding=768, padding_idx=None,
         n_segments=n_segments,
     )
 
+def to_bert_input(token_idx, null_idx):
+        """ token_idx is a 2D tensor int.
+        return token_idx, segment_idx and mask
+        """
+        segment_idx = token_idx * 0
+        mask = (token_idx != null_idx)
+        # nullify elements in case self.NULL_IDX was not 0
+        token_idx = token_idx * mask.long()
+        return token_idx, segment_idx, mask
+
 
 class BertTransformerModule(TransformerGeneratorModel):
     def reorder_encoder_states(self, encoder_states, indices):
@@ -65,4 +75,36 @@ class BertTransformerModule(TransformerGeneratorModel):
         def reorder_encoder_states(self, encoder_states, indices):
         # no support for beam search at this time
             return None
-    
+        
+    def forward(self, *xs, ys=None, cand_params=None, prev_enc=None, maxlen=None,
+                    bsz=None):
+            print('-----forward')
+            print('*xs:')
+            print(*xs[0])
+            print(*xs[0].size())
+            if ys is not None:
+                # TODO: get rid of longest_label
+                # keep track of longest label we've ever seen
+                # we'll never produce longer ones than that during prediction
+                self.longest_label = max(self.longest_label, ys.size(1))
+            token_idx, segment_idx, mask = to_bert_input(*xs, self.NULL_IDX)
+            print('token_idx:')
+            print(token_idx)
+            print(token_idx.size())
+            # use cached encoding if available
+            encoder_states = prev_enc if prev_enc is not None else self.encoder(token_idx.cuda(), segment_idx, mask),mask
+            print('encoder_states:')
+            print(encoder_states[0])
+            print(encoder_states[0].size())
+            if ys is not None:
+                # use teacher forcing
+                scores, preds = self.decode_forced(encoder_states, ys)
+            else:
+                scores, preds = self.decode_greedy(
+                    encoder_states,
+                    bsz,
+                    maxlen or self.longest_label
+                )
+
+            return scores, preds, encoder_states
+

@@ -121,9 +121,12 @@ class BertWrapper(torch.nn.Module):
             mask = (~attention_mask[:, 1:]).type(dtype).unsqueeze(2) * neginf(dtype)
             embeddings, _ = torch.max(outputs_of_interest + mask, dim=1)
         else:
+            print('embedding_layer')
+            print(embedding_layer.size())
             # easiest, we consider the output of "CLS" as the embedding
-            embeddings = embedding_layer[:, 0, :]
-
+            embeddings = embedding_layer#[:, 0, :]
+            print('embeddings')
+            print(embeddings.size())
         # We need this in case of dimensionality reduction
         result = self.additional_linear_layer(embeddings)
 
@@ -131,6 +134,8 @@ class BertWrapper(torch.nn.Module):
         # is used for grad computation, even though it does not change anything...
         # in practice, it just adds a very (768*768) x (768*batchsize) matmul
         result += 0 * torch.sum(output_pooler)
+        print('result')
+        print(result.size())
         return result
 
 

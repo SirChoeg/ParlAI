@@ -23,6 +23,12 @@ def _normalize(tensor, norm_layer):
 
 def _create_embeddings(dictionary, embedding_size, padding_idx):
     """Create and initialize word embeddings."""
+    print('len(dictionary)')
+    print(len(dictionary))
+    print('embedding_size')
+    print(embedding_size)
+    print('padding_idx')
+    print(padding_idx)
     e = nn.Embedding(len(dictionary), embedding_size, padding_idx)
     nn.init.normal_(e.weight, mean=0, std=embedding_size ** -0.5)
     nn.init.constant_(e.weight[padding_idx], 0)
@@ -349,30 +355,42 @@ class TransformerEncoder(nn.Module):
             mask is a ByteTensor of shape [batch, seq_len], filled with 1 when
             inside the sequence and 0 outside.
         """
+        print('input')
+        print(input)
+        print(input.size())
         mask = input != self.padding_idx
         if positions is None:
             positions = (mask.cumsum(dim=1, dtype=torch.int64) - 1).clamp_(min=0)
         tensor = self.embeddings(input)
+        print('tensor0')
+        print(tensor.size())
         if self.embeddings_scale:
             tensor = tensor * np.sqrt(self.dim)
 
         tensor = tensor + self.position_embeddings(positions).expand_as(tensor)
-
+        print('tensor1')
+        print(tensor.size())
         if self.n_segments >= 1:
             if segments is None:
                 segments = torch.zeros_like(input)
             tensor = tensor + self.segment_embeddings(segments)
-
+            print('tensor2')
+            print(tensor)
         if self.variant == 'xlm':
             tensor = _normalize(tensor, self.norm_embeddings)
-
+            print('tensor3')
+            print(tensor.size())
         # --dropout on the embeddings
         tensor = self.dropout(tensor)
-
+        print('tensor4')
+        print(tensor.size())
         tensor *= mask.unsqueeze(-1).type_as(tensor)
+        print('tensor5')
+        print(tensor.size())
         for i in range(self.n_layers):
             tensor = self.layers[i](tensor, mask)
-
+            print('tensor5')
+            print(tensor.size())
         if self.reduction_type == 'first':
             return tensor[:, 0, :]
         elif self.reduction_type == 'max':
@@ -383,6 +401,8 @@ class TransformerEncoder(nn.Module):
             return output
         elif self.reduction_type == 'none' or self.reduction_type is None:
             output = tensor
+            print('tensor6')
+            print(tensor.size())
             return output, mask
         else:
             raise ValueError(
@@ -572,6 +592,11 @@ class TransformerDecoderLayer(nn.Module):
         self.norm3 = nn.LayerNorm(embedding_size, eps=LAYER_NORM_EPS)
 
     def forward(self, x, encoder_output, encoder_mask):
+        print('encoder_output:')
+        #print(encoder_output)
+        print('/encoder_output')
+        print('encoder_output_dim:')
+        print(encoder_output.size())
         decoder_mask = self._create_selfattn_mask(x)
         # first self attn
         residual = x
